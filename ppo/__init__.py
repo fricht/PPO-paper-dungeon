@@ -1,6 +1,6 @@
 import tensorflow as tf
 import numpy as np
-import env
+from env import *
 
 
 class Actor(tf.keras.Model):
@@ -35,15 +35,23 @@ class Critic(tf.keras.Model):
 
 class PPO:
     # TODO : write unit tests for this class
-    def __init__(self, actions_count, gamma=0.95, actor_lr=0.001, critic_lr=0.001):
+    def __init__(self, state_size, actions_count, gamma=0.95, actor_lr=0.001, critic_lr=0.001):
         self.actor = Actor(actions_count)
         self.critic = Critic()
         self.actor_opti = tf.keras.optimizers.Adam(learning_rate=actor_lr)
         self.critic_opti = tf.keras.optimizers.Adam(learning_rate=critic_lr)
         self.gamma = gamma # the discount factor
+        self.state_size = state_size
 
     def get_action(self, state):
-        return np.argmax(self.actor([state])[0])
+        return self.actor(state)
+
+    def get_weighted_action(self, state):
+        probs = self.actor(state)
+        probs = probs.numpy()[0]
+        probs /= np.sum(probs)
+        action = np.random.choice(range(probs.shape[0]), p=probs)
+        return action
 
     def compute_discounted_returns(self, rewards):
         returns = []
@@ -51,7 +59,7 @@ class PPO:
         for r in reversed(rewards):
             discounted_sum = r + self.gamma * discounted_sum
             returns.insert(0, discounted_sum)
-        return tf.Tensor(returns)
+        return returns
 
     # thank you chat GPT, i don't understand everything
     def train_step(self, states, actions, advantages, returns):
@@ -74,7 +82,7 @@ class PPO:
         self.critic_opti.apply_gradients(zip(grads_critic, self.critic.trainable_variables))
 
     # i understood better this function
-    def train_episode(self, states, actions, rewards, batch_size=32):
+    def train(self, states, actions, rewards, batch_size=32):
         states = tf.convert_to_tensor(states, dtype=tf.float32)
         actions = tf.convert_to_tensor(actions, dtype=tf.int32)
         rewards = tf.convert_to_tensor(rewards, dtype=tf.float32)
@@ -82,7 +90,7 @@ class PPO:
         values = self.critic(states)
         advantages = rewards - values.numpy().flatten()
 
-        returns = self.compute_returns(rewards)
+        returns = self.compute_discounted_returns(rewards)
 
         # Normalize advantages
         advantages = (advantages - np.mean(advantages)) / (np.std(advantages) + 1e-8)
@@ -99,3 +107,33 @@ class PPO:
                 batch_returns = tf.gather(returns, batch_indices)
 
                 self.train_step(batch_states, batch_actions, batch_advantages, batch_returns)
+
+    def generate_episodes(self, env, num_episodes):
+        all_states, all_actions, all_rewards = [], [], []
+
+        for episode in range(num_episodes):
+            state = env.reset()
+            episode_states, episode_actions, episode_rewards = [], [], []
+
+            while True:
+                # Get action from the agent
+                action = self.get_weighted_action(np.reshape(state, [1, self.state_size]))
+
+                # Take the action and observe the next state and reward
+                next_state, reward, done = env.step(action)
+
+                # Save the experience
+                episode_states.append(state)
+                episode_actions.append(action)
+                episode_rewards.append(reward)
+
+                state = next_state
+
+                if done:
+                    # Store the episode data
+                    all_states.extend(episode_states)
+                    all_actions.extend(episode_actions)
+                    all_rewards.extend(episode_rewards)
+                    break
+
+        return np.array(all_states), np.array(all_actions), np.array(all_rewards)
